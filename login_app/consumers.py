@@ -1,238 +1,111 @@
-# # consumers.py
-# import json
-# from channels.generic.websocket import AsyncWebsocketConsumer
-# from channels.db import database_sync_to_async
-# from django.contrib.auth import get_user_model
-# from django.core.exceptions import ObjectDoesNotExist
-# from login_app.models import Message
-# from rest_framework_simplejwt.tokens import AccessToken
+"""
+WebSockets SolidarLink.
 
-# User = get_user_model()
-
-# class ChatConsumer(AsyncWebsocketConsumer):
-#     async def connect(self):
-#         self.sender_id = self.scope['url_route']['kwargs']['sender_id']
-#         self.receiver_id = self.scope['url_route']['kwargs']['receiver_id']
-        
-#         # Normalisation du nom du groupe
-#         user_ids = sorted([int(self.sender_id), int(self.receiver_id)])
-#         self.room_group_name = f'chat_{user_ids[0]}_{user_ids[1]}'
-        
-#         await self.accept()
-        
-#         # Vérification de l'utilisateur via le token dans le premier message
-#         # On ne fait pas l'authentification ici pour permettre au client d'envoyer le token
-
-#     async def disconnect(self, close_code):
-#         # Quitter le groupe
-#         await self.channel_layer.group_discard(
-#             self.room_group_name,
-#             self.channel_name
-#         )
-
-#     async def receive(self, text_data):
-#         try:
-#             text_data_json = json.loads(text_data)
-            
-#             # Authentification
-#             if text_data_json.get('type') == 'authentication':
-#                 token = text_data_json.get('token')
-#                 if await self.authenticate_user(token):
-#                     await self.send(text_data=json.dumps({
-#                         'type': 'authentication',
-#                         'status': 'success'
-#                     }))
-#                 else:
-#                     await self.send(text_data=json.dumps({
-#                         'type': 'authentication',
-#                         'status': 'failed',
-#                         'message': 'Invalid token'
-#                     }))
-#                     await self.close()
-#                 return
-            
-#             # Messages normaux
-#             message = text_data_json.get('message')
-#             sender_id = text_data_json.get('sender_id')
-#             receiver_id = text_data_json.get('receiver_id')
-            
-#             # Validation de l'expéditeur
-#             if str(sender_id) != self.sender_id:
-#                 await self.send(text_data=json.dumps({
-#                     'type': 'error',
-#                     'message': 'Sender ID mismatch'
-#                 }))
-#                 return
-                
-#             # Sauvegarde du message
-#             saved_message = await self.save_message(sender_id, receiver_id, message)
-            
-#             # Envoi au groupe
-#             await self.channel_layer.group_send(
-#                 self.room_group_name,
-#                 {
-#                     'type': 'chat_message',
-#                     'message': message,
-#                     'sender_id': sender_id,
-#                     'receiver_id': receiver_id,
-#                     'timestamp': saved_message.date_envoi.isoformat(),
-#                     'message_id': saved_message.id  # Ajout de l'ID du message
-#                 }
-#             )
-            
-#         except json.JSONDecodeError:
-#             await self.send(text_data=json.dumps({
-#                 'type': 'error',
-#                 'message': 'Invalid JSON format'
-#             }))
-#         except Exception as e:
-#             print(f"Error in receive: {e}")
-#             await self.send(text_data=json.dumps({
-#                 'type': 'error',
-#                 'message': 'Internal server error'
-#             }))
-
-#     async def chat_message(self, event):
-#         # Envoi du message via WebSocket
-#         await self.send(text_data=json.dumps({
-#             'type': 'chat_message',
-#             'message': event['message'],
-#             'sender_id': event['sender_id'],
-#             'receiver_id': event['receiver_id'],
-#             'timestamp': event['timestamp'],
-#             'message_id': event.get('message_id')  # Inclure l'ID du message
-#         }))
-
-#     @database_sync_to_async
-#     def authenticate_user(self, token):
-#         try:
-#             access_token = AccessToken(token)
-#             user_id = access_token['user_id']
-#             user = User.objects.get(id=user_id)
-#             return user.id == int(self.sender_id)
-#         except Exception as e:
-#             print(f"Authentication error: {e}")
-#             return False
-
-#     @database_sync_to_async
-#     def save_message(self, sender_id, receiver_id, content):
-#         try:
-#             sender = User.objects.get(id=sender_id)
-#             receiver = User.objects.get(id=receiver_id)
-#             message = Message.objects.create(
-#                 sender=sender,
-#                 receiver=receiver,
-#                 contenu=content
-#             )
-#             return message
-#         except ObjectDoesNotExist as e:
-#             print(f"User not found: {e}")
-#             raise
-#         except Exception as e:
-#             print(f"Error saving message: {e}")
-#             raise
-
+Correctif sécurité : l'ancienne version acceptait les messages avant toute
+authentification et faisait confiance au `sender_id` envoyé par le client.
+Désormais :
+  - la connexion est refusée sans JWT valide (?token=...) ;
+  - l'expéditeur est toujours l'utilisateur authentifié ;
+  - l'URL ne contient que l'interlocuteur : ws/chat/<other_user_id>/
+"""
 
 import json
-from channels.generic.websocket import AsyncWebsocketConsumer
+
 from channels.db import database_sync_to_async
+from channels.generic.websocket import AsyncWebsocketConsumer
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ObjectDoesNotExist
+
 from login_app.models import Message
-from rest_framework_simplejwt.tokens import AccessToken
 
 User = get_user_model()
+MAX_LONGUEUR = 5000
+
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.sender_id = self.scope['url_route']['kwargs']['sender_id']
-        self.receiver_id = self.scope['url_route']['kwargs']['receiver_id']
-
-        # Générer un nom de groupe stable peu importe l’ordre des IDs
-        user_ids = sorted([int(self.sender_id), int(self.receiver_id)])
-        self.room_group_name = f'chat_{user_ids[0]}_{user_ids[1]}'
-
+        self.user = self.scope.get("user")
+        if not self.user or not self.user.is_authenticated:
+            await self.close(code=4401)
+            return
+        self.other_id = int(self.scope["url_route"]["kwargs"]["other_id"])
+        if self.other_id == self.user.id or not await self._user_exists(self.other_id):
+            await self.close(code=4404)
+            return
+        a, b = sorted([self.user.id, self.other_id])
+        self.room_group_name = f"chat_{a}_{b}"
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        if hasattr(self, "room_group_name"):
+            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
-    async def receive(self, text_data):
+    async def receive(self, text_data=None, bytes_data=None):
         try:
-            data = json.loads(text_data)
+            data = json.loads(text_data or "{}")
+        except json.JSONDecodeError:
+            await self._error("Format JSON invalide.")
+            return
+        contenu = (data.get("message") or "").strip()
+        if not contenu:
+            return
+        if len(contenu) > MAX_LONGUEUR:
+            await self._error("Message trop long.")
+            return
 
-            if data.get('type') == 'authentication':
-                token = data.get('token')
-                if await self.authenticate_user(token):
-                    await self.send(text_data=json.dumps({
-                        'type': 'authentication',
-                        'status': 'success'
-                    }))
-                else:
-                    await self.send(text_data=json.dumps({
-                        'type': 'authentication',
-                        'status': 'failed',
-                        'message': 'Invalid token'
-                    }))
-                    await self.close()
-                return
-
-            # Message standard
-            message = data.get('message')
-            sender_id = data.get('sender_id')
-            receiver_id = data.get('receiver_id')
-
-            if str(sender_id) != self.sender_id:
-                await self.send(text_data=json.dumps({
-                    'type': 'error',
-                    'message': 'Sender ID mismatch'
-                }))
-                return
-
-            saved_message = await self.save_message(sender_id, receiver_id, message)
-
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'chat_message',
-                    'message': message,
-                    'sender_id': sender_id,
-                    'receiver_id': receiver_id,
-                    'timestamp': saved_message.date_envoi.isoformat(),
-                    'message_id': saved_message.id,
-                }
-            )
-
-        except Exception as e:
-            print(f"Receive error: {e}")
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Internal server error'
-            }))
+        msg = await self._save(contenu)
+        payload = {
+            "type": "chat_message",
+            "message": msg.contenu,
+            "sender_id": self.user.id,
+            "receiver_id": self.other_id,
+            "timestamp": msg.date_envoi.isoformat(),
+            "message_id": msg.id,
+        }
+        await self.channel_layer.group_send(self.room_group_name, payload)
+        # Prévient le destinataire même s'il n'a pas la conversation ouverte
+        await self.channel_layer.group_send(
+            f"notif_{self.other_id}", {"type": "nouveau_message", "sender_id": self.user.id, "apercu": contenu[:80]}
+        )
 
     async def chat_message(self, event):
-        await self.send(text_data=json.dumps({
-            'type': 'chat_message',
-            'message': event['message'],
-            'sender_id': event['sender_id'],
-            'receiver_id': event['receiver_id'],
-            'timestamp': event['timestamp'],
-            'message_id': event['message_id'],
-        }))
+        await self.send(text_data=json.dumps({k: v for k, v in event.items() if k != "type"} | {"type": "chat_message"}))
+
+    async def _error(self, message):
+        await self.send(text_data=json.dumps({"type": "error", "message": message}))
 
     @database_sync_to_async
-    def authenticate_user(self, token):
-        try:
-            access_token = AccessToken(token)
-            user_id = access_token['user_id']
-            return str(user_id) == self.sender_id
-        except Exception as e:
-            print(f"Auth error: {e}")
-            return False
+    def _user_exists(self, user_id):
+        return User.objects.filter(id=user_id, is_active=True).exists()
 
     @database_sync_to_async
-    def save_message(self, sender_id, receiver_id, content):
-        sender = User.objects.get(id=sender_id)
-        receiver = User.objects.get(id=receiver_id)
-        return Message.objects.create(sender=sender, receiver=receiver, contenu=content)
+    def _save(self, contenu):
+        return Message.objects.create(sender=self.user, receiver_id=self.other_id, contenu=contenu)
+
+
+class NotificationConsumer(AsyncWebsocketConsumer):
+    """Canal personnel de notifications temps réel : ws/notifications/?token=..."""
+
+    async def connect(self):
+        user = self.scope.get("user")
+        if not user or not user.is_authenticated:
+            await self.close(code=4401)
+            return
+        self.group = f"notif_{user.id}"
+        await self.channel_layer.group_add(self.group, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if hasattr(self, "group"):
+            await self.channel_layer.group_discard(self.group, self.channel_name)
+
+    async def receive(self, text_data=None, bytes_data=None):
+        pass  # canal en lecture seule
+
+    async def notification(self, event):
+        await self.send(text_data=json.dumps({"type": "notification", "notification": event["notification"]}))
+
+    async def nouveau_message(self, event):
+        await self.send(
+            text_data=json.dumps({"type": "nouveau_message", "sender_id": event["sender_id"], "apercu": event["apercu"]})
+        )

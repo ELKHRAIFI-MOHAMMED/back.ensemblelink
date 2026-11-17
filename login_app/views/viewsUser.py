@@ -1,299 +1,248 @@
-from rest_framework import generics, status
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework_simplejwt.views import TokenObtainPairView
-from login_app.serializers import UserSerializerSignUp,AssociationProfileSignUp,CitoyenProfileSignUp
-from rest_framework_simplejwt.tokens import RefreshToken
-from login_app.models import  *
-from django.contrib.auth import authenticate
-from rest_framework.permissions import IsAuthenticated
-from django.core.validators import validate_email
-from django.core.exceptions import ValidationError
+from django.contrib.auth import authenticate, get_user_model
+from django.db.models import Avg, Count, Q
 from django.shortcuts import get_object_or_404
-from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import csrf_protect
-from django.contrib.auth.models import User
-from django.contrib import messages
-from django.contrib.auth import get_user_model
-from django.core.files.storage import default_storage
-import json
-import os
-import uuid
-from datetime import datetime
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import RefreshToken
 
-
-
-
-
-
-
+from login_app.models import Annonce, AssociationProfile, Avis, CitoyenProfile, PhotoAlbum
+from login_app.permissions import IsAssociation, IsCitoyen
+from login_app.serializers import (
+    AnnonceSerializer,
+    AssociationProfileSerializer,
+    AvisSerializer,
+    CitoyenProfileSerializer,
+    PhotoAlbumSerializer,
+    UserSerializer,
+    UserSignUpSerializer,
+)
+from login_app.services import notifier, stats_association, stats_citoyen
 
 User = get_user_model()
+
+
+def _tokens(user):
+    refresh = RefreshToken.for_user(user)
+    return {"access": str(refresh.access_token), "refresh": str(refresh)}
+
+
+def _profil_utilisateur(user, request):
+    """Profil + statistiques de l'utilisateur connecté."""
+    ctx = {"request": request}
+    if hasattr(user, "association_profile"):
+        asso = user.association_profile
+        return AssociationProfileSerializer(asso, context=ctx).data, stats_association(asso)
+    if hasattr(user, "citoyen_profile"):
+        cit = user.citoyen_profile
+        return CitoyenProfileSerializer(cit, context=ctx).data, stats_citoyen(cit)
+    return None, None
+
+
 class SignUpView(generics.CreateAPIView):
-    serializer_class = UserSerializerSignUp
-    
-    def post(self, request, *args, **kwargs):
+    permission_classes = [AllowAny]
+    serializer_class = UserSignUpSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
+
+    def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        # 1. Create the user
+        serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        
-        # 2. Authenticate the newly created user
-        authenticated_user = authenticate(
-            username=request.data.get('username'),
-            password=request.data.get('password')
+        return Response(
+            {"user": UserSerializer(user).data, **_tokens(user), "message": "Compte créé avec succès."},
+            status=status.HTTP_201_CREATED,
         )
-        
-        if not authenticated_user:
-            return Response(
-                {"error": "Authentication failed after signup"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        
-        # 3. Generate JWT tokens
-        refresh = RefreshToken.for_user(authenticated_user)
-        
-        # 4. Return both user data and tokens
-        return Response({
-            "user": UserSerializerSignUp(user, context=self.get_serializer_context()).data,
-            "access": str(refresh.access_token),  # Convert to string
-            "refresh": str(refresh),  # Convert to string
-            "message": "User created and logged in successfully",
-        }, status=status.HTTP_201_CREATED)
-    
 
 
 class LoginView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
+
     def post(self, request):
-        username_email = request.data.get('username_email')
-        password = request.data.get('password')
-
-        # Vérification si c'est un email
-        is_email = False
-        try:
-            validate_email(username_email)
-            is_email = True
-        except ValidationError:
-            pass  
-
-        # Authentification
-        if is_email:
-           
-            user = authenticate(request, email=username_email, password=password)
-        else:
-            
-            user = authenticate(request, username=username_email, password=password)
-        
+        identifiant = (request.data.get("username_email") or "").strip()
+        password = request.data.get("password") or ""
+        user = authenticate(request, username=identifiant, password=password)
         if not user:
             return Response(
-                {"error": "Email ou mot de passe incorrect"}, 
-                status=status.HTTP_401_UNAUTHORIZED
+                {"error": "Identifiants incorrects ou compte désactivé."}, status=status.HTTP_401_UNAUTHORIZED
             )
+        return Response({**_tokens(user), "user": UserSerializer(user).data})
 
-        # Génération des tokens JWT
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
-
-        # Réponse avec token + infos utilisateur
-        return Response({
-            'access': access_token,
-            'refresh': str(refresh),
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'username': user.username,
-                'type': user.type,  # Champ personnalisé de votre modèle
-            }
-        }, status=status.HTTP_200_OK)
 
 class UserDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    """GET /api/me/ : utilisateur connecté, son profil et ses statistiques."""
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
-        return Response(serializer.data)
+        profil, stats = _profil_utilisateur(request.user, request)
+        return Response({"user": UserSerializer(request.user).data, "profil": profil, "stats": stats})
 
+
+# ------------------------------------------------------------------ associations
 
 class SignUpAssociationView(generics.CreateAPIView):
-    serializer_class = AssociationProfileSignUp
-    permission_classes = [IsAuthenticated]
-    def post(self, request, *args, **kwargs):
-        userConnecte = request.user  
-        
-        if userConnecte.type != "ASSOCIATION":
-            return Response(
-                {"detail": "Seuls les utilisateurs de type 'ASSOCIATION' peuvent créer un profil association."},
-                status=status.HTTP_403_FORBIDDEN
-                )
-            
-        files = request.FILES.getlist('logo') # récupère les fichiers envoyés
-        logo = []
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        for image_file in files:
-            ext = os.path.splitext(image_file.name)[1]  # ex: ".jpg"
-            unique_id = uuid.uuid4().hex[:8]
-            new_filename = f"media/logos/{timestamp}_{unique_id}{ext}"
-            path = default_storage.save(f'logos/{new_filename}', image_file)
-            logo.append(path) 
-        data = request.data.copy()
-        data["user"] = userConnecte.id
-        data['feedback'] = json.dumps([])
-        if len(logo)!=0:
-            data["logo"]=str(logo[0])
-        
-        serializer = self.get_serializer(data=data, context={'request': request})
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        # 1. Création du profil (et de l'utilisateur associé si votre serializer le gère)
-        profile = serializer.save()
-        
-        # 2. Désactivation de l'utilisateur APRÈS la création du profil
-        user = profile.user  # Supposant que votre modèle AssociationProfile a une ForeignKey vers User
-        user.is_active = False
-        user.save()
-        
-        return Response({
-            "AssociationProfile":"request.user.id",
-            "message": "Profil d'association créé avec succès. Compte utilisateur désactivé.",
-        }, status=status.HTTP_201_CREATED)
-    
+    serializer_class = AssociationProfileSerializer
+
+    def create(self, request, *args, **kwargs):
+        user = request.user
+        if user.type != User.UserType.ASSOCIATION:
+            return Response({"detail": "Réservé aux comptes de type ASSOCIATION."}, status=status.HTTP_403_FORBIDDEN)
+        if hasattr(user, "association_profile"):
+            return Response({"detail": "Ce compte possède déjà un profil association."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profil = serializer.save(user=user)
+
+        # Le compte reste actif ; seule la publication d'annonces attend la vérification admin.
+        for admin in User.objects.filter(Q(type=User.UserType.ADMIN) | Q(is_superuser=True), is_active=True):
+            notifier(admin, "Nouvelle association à vérifier", f"{profil.nom} attend une vérification.", "/espace/admin")
+        return Response(
+            {
+                "profil": self.get_serializer(profil).data,
+                "message": "Profil créé. Vous pourrez publier des annonces après vérification par un administrateur.",
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class AssociationProfileUpdateView(generics.RetrieveUpdateAPIView):
-    queryset = AssociationProfile.objects.all()
-    serializer_class = AssociationProfileSignUp
-    permission_classes = [IsAuthenticated]
+    serializer_class = AssociationProfileSerializer
+    permission_classes = [IsAssociation]
 
     def get_object(self):
-        # Récupère le profil de l'association de l'utilisateur connecté
-        return get_object_or_404(AssociationProfile, user=self.request.user)
+        return self.request.user.association_profile
 
-    def update(self, request, *args, **kwargs):
-        profile = AssociationProfile.objects.get(user=request.user)
-        data = request.data.copy()
+    def perform_update(self, serializer):
+        ancien_logo = serializer.instance.logo
+        profil = serializer.save()
+        # Supprime l'ancien fichier si un nouveau logo a été envoyé
+        if ancien_logo and "logo" in serializer.validated_data and ancien_logo != profil.logo:
+            ancien_logo.delete(save=False)
 
-        # Vérifie s'il y a un nouveau fichier "logo" envoyé
-        new_logo_files = request.FILES.getlist('logo')
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if new_logo_files:
-            # Supprimer l'ancien logo du dossier si présent
-            if profile.logo and default_storage.exists(profile.logo):
-                default_storage.delete(profile.logo)
 
-            # Enregistrer le nouveau logo
-            new_logo_file = new_logo_files[0]
-            ext = os.path.splitext(new_logo_file.name)[1]  # ex: ".jpg"
-            unique_id = uuid.uuid4().hex[:8]
-            new_filename = f"media/logos/{timestamp}_{unique_id}{ext}"
-            path = default_storage.save(f'logos/{new_filename}', new_logo_file)
-            data['logo'] = str(path)
-            
+class AssociationListView(generics.ListAPIView):
+    """Liste publique des associations vérifiées, avec note moyenne."""
 
-        serializer = self.get_serializer(profile, data=data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
+    permission_classes = [AllowAny]
+    serializer_class = AssociationProfileSerializer
+    search_fields = ["nom", "description", "ville"]
+    filterset_fields = ["ville"]
+    ordering_fields = ["nom", "note_moyenne", "nombre_annonces"]
 
-        return Response({
-            "message": "Profil mis à jour avec succès.",
-            "logo": serializer.data.get("logo")
-        })
+    def get_queryset(self):
+        return (
+            AssociationProfile.objects.filter(statut_verification=AssociationProfile.StatutVerification.VERIFIEE)
+            .annotate(
+                note_moyenne=Avg("user__avis_recus__note"),
+                nombre_avis=Count("user__avis_recus", distinct=True),
+                nombre_annonces=Count("annonces", distinct=True),
+            )
+            .order_by("nom")
+        )
 
+
+class AssociationPublicDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        asso = get_object_or_404(
+            AssociationProfile, pk=pk, statut_verification=AssociationProfile.StatutVerification.VERIFIEE
+        )
+        ctx = {"request": request}
+        annonces = Annonce.objects.filter(association=asso).select_related("categorie", "association")
+        avis = Avis.objects.filter(cible=asso.user).select_related("auteur", "annonce")[:20]
+        return Response(
+            {
+                "association": AssociationProfileSerializer(asso, context=ctx).data,
+                "stats": stats_association(asso),
+                "annonces": AnnonceSerializer(annonces, many=True, context=ctx).data,
+                "avis": AvisSerializer(avis, many=True, context=ctx).data,
+            }
+        )
+
+
+# ------------------------------------------------------------------ citoyens
 
 class SignUpCitoyenView(generics.CreateAPIView):
-    serializer_class = CitoyenProfileSignUp
-    permission_classes = [IsAuthenticated]
+    serializer_class = CitoyenProfileSerializer
 
-    def post(self, request, *args, **kwargs):
-        user_connecte = request.user
-        
-        
-        if user_connecte.type != "CITOYEN":
-            return Response(
-                {"detail": "Seuls les utilisateurs de type 'CITOYEN' peuvent créer un profil citoyen."},
-                status=status.HTTP_403_FORBIDDEN
-                )
-        
-        # 1. Traiter les fichiers reçus dans album_photos[]
+    def create(self, request, *args, **kwargs):
+        user = request.user
+        if user.type != User.UserType.CITOYEN:
+            return Response({"detail": "Réservé aux comptes de type CITOYEN."}, status=status.HTTP_403_FORBIDDEN)
+        if hasattr(user, "citoyen_profile"):
+            return Response({"detail": "Ce compte possède déjà un profil citoyen."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profil = serializer.save(user=user)
+        for image in request.FILES.getlist("album_photos")[:10]:
+            photo = PhotoAlbumSerializer(data={"image": image})
+            if photo.is_valid():
+                photo.save(citoyen=profil)
+        return Response(
+            {"profil": self.get_serializer(profil).data, "message": "Profil citoyen créé avec succès."},
+            status=status.HTTP_201_CREATED,
+        )
 
-        files = request.FILES.getlist('album_photos') # récupère les fichiers envoyés
-        
-        album_photo_paths = []
-        for image_file in files:
-            filename = default_storage.save(f'album_photos/{image_file.name}', image_file)
-            album_photo_paths.append(filename)
-            
-            
-       
-        
-        
-        # 2. Ajouter user et album_photos au data
-        data = request.data.copy()
-        data['user'] = user_connecte.id
-        data['album_photos'] =json.dumps(album_photo_paths) # très important si plusieurs fichiers
-        data['feedback'] =json.dumps([])
-        serializer = self.get_serializer(data=data, context={'request': request})
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # 3. Créer le profil
-        profile = serializer.save()
-
-        # 4. Désactiver le compte utilisateur
-        user = profile.user
-        user.is_active = False
-        user.save()
-
-        return Response({
-            "CitoyenProfile": profile.id,
-            "message": "Profil citoyen créé avec succès. Compte utilisateur désactivé.",
-        }, status=status.HTTP_201_CREATED)
-    
 class CitoyenProfileUpdateView(generics.RetrieveUpdateAPIView):
-    queryset = CitoyenProfile.objects.all()
-    serializer_class = CitoyenProfileSignUp
-    permission_classes = [IsAuthenticated]
+    """Correctif : l'ancienne signature `get_object(self, request)` provoquait une erreur 500."""
 
-    def get_object(self, request):
-        # Récupère le profil de l'association de l'utilisateur connecté
-        return get_object_or_404(CitoyenProfile, user=self.request.user)
+    serializer_class = CitoyenProfileSerializer
+    permission_classes = [IsCitoyen]
 
-
-
-class UserStatusView(APIView):
-    permission_classes = [IsAuthenticated]  # Seul un utilisateur authentifié peut accéder
-
-    def post(self, request, user_id):
-        try:
-            user = User.objects.get(pk=user_id)
-            
-            # Empêcher un admin de se désactiver lui-même
-            if user == request.user and request.user.type != "ADMIN":
-                return Response(
-                    {"error": "You cannot deactivate yourself and not Admin"},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-            # Basculer le statut is_active
-            user.is_active = not user.is_active
-            user.save()
-            
-            return Response({
-                "id": user.id,
-                "username": user.username,
-                "new_status": "active" if user.is_active else "inactive",
-                "message": "User status updated successfully"
-            }, status=status.HTTP_200_OK)
-            
-        except User.DoesNotExist:
-            return Response(
-                {"error": "User not found"},
-                status=status.HTTP_404_NOT_FOUND)
+    def get_object(self):
+        return self.request.user.citoyen_profile
 
 
-@api_view(['GET'])
-def get_all_associations(request):
-    associations = AssociationProfile.objects.all()
-    serializer = AssociationProfileSignUp(associations, many=True)
-    return Response(serializer.data)
+class CitoyenPublicDetailView(APIView):
+    """Profil d'un bénévole, visible par les utilisateurs connectés (sans email)."""
+
+    def get(self, request, pk):
+        cit = get_object_or_404(CitoyenProfile, pk=pk)
+        ctx = {"request": request}
+        avis = Avis.objects.filter(cible=cit.user).select_related("auteur", "annonce")[:20]
+        return Response(
+            {
+                "citoyen": CitoyenProfileSerializer(cit, context=ctx).data,
+                "stats": stats_citoyen(cit),
+                "avis": AvisSerializer(avis, many=True, context=ctx).data,
+            }
+        )
+
+
+class AlbumPhotoView(generics.ListCreateAPIView):
+    serializer_class = PhotoAlbumSerializer
+    permission_classes = [IsCitoyen]
+    pagination_class = None
+
+    def get_queryset(self):
+        return self.request.user.citoyen_profile.album.all()
+
+    def perform_create(self, serializer):
+        serializer.save(citoyen=self.request.user.citoyen_profile)
+
+
+class AlbumPhotoDeleteView(generics.DestroyAPIView):
+    permission_classes = [IsCitoyen]
+
+    def get_queryset(self):
+        return PhotoAlbum.objects.filter(citoyen=self.request.user.citoyen_profile)
+
+    def perform_destroy(self, instance):
+        instance.image.delete(save=False)
+        instance.delete()
+
+
+class StatsView(APIView):
+    """Statistiques d'impact publiques (page d'accueil)."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from login_app.services import stats_globales
+
+        return Response(stats_globales())

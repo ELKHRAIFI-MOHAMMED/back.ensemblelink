@@ -1,138 +1,73 @@
-from rest_framework.permissions import BasePermission, SAFE_METHODS
-from datetime import datetime, timezone
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-class IsAdminOrReadOnlyForCitoyenAssociation(BasePermission):
+
+def _is_admin(user):
+    return bool(user and user.is_authenticated and (user.type == "ADMIN" or user.is_superuser))
+
+
+class IsAdmin(BasePermission):
+    message = "Réservé aux administrateurs."
+
     def has_permission(self, request, view):
-        user = request.user
+        return _is_admin(request.user)
 
-        # Si l'utilisateur n'est pas authentifié 
-        if not user or not user.is_authenticated:
-            return False
 
-        # Si c'est un admin, autoriser tout
-        if user.type == "ADMIN":
+class IsAdminOrReadOnly(BasePermission):
+    """Lecture publique, écriture réservée à l'admin (catégories, compétences)."""
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
             return True
-
-        # Si c'est un CITOYEN ou ASSOCIATION, lecture seule uniquement
-        if user.type in ['CITOYEN', 'ASSOCIATION']:
-            return request.method in SAFE_METHODS
-
-        # Par défaut, accès refusé
-        return False
+        return _is_admin(request.user)
 
 
-class OnlyAssociationCreate(BasePermission):
+class IsCitoyen(BasePermission):
+    message = "Réservé aux citoyens disposant d'un profil."
+
     def has_permission(self, request, view):
         user = request.user
+        return bool(user and user.is_authenticated and user.type == "CITOYEN" and hasattr(user, "citoyen_profile"))
 
-        if not user or not user.is_authenticated:
-            return False
 
-        if user.type == "ADMIN":
-            return request.method in ['DELETE','GET']
+class IsAssociation(BasePermission):
+    message = "Réservé aux associations disposant d'un profil."
 
-        if user.type == "CITOYEN":
-            return request.method in SAFE_METHODS
-
-        if user.type == "ASSOCIATION":
-            return request.method in ['DELETE', 'PUT', 'GET','POST']
-
-        return False
-
-    def has_object_permission(self, request, view, obj):
+    def has_permission(self, request, view):
         user = request.user
-        
-        if not user or not user.is_authenticated:
-            return False
-        
-        
-        if user.type == "ADMIN":
-            return request.method in ['DELETE','GET']
-        
-        if (user.id!=obj.association.user.id) :
-            return request.method in SAFE_METHODS
-        
+        return bool(
+            user and user.is_authenticated and user.type == "ASSOCIATION" and hasattr(user, "association_profile")
+        )
 
-        if user.type == "CITOYEN":
-            return request.method in SAFE_METHODS
 
-        if user.type == "ASSOCIATION":
-            # if obj.date_debut < datetime.now(timezone.utc):
-            #     return request.method in ['DELETE', 'POST', 'GET']
+class AnnoncePermission(BasePermission):
+    """
+    - Lecture : publique.
+    - Création : association **vérifiée** uniquement.
+    - Modification : association propriétaire.
+    - Suppression : association propriétaire ou admin.
+    """
+
+    message = "Action non autorisée sur cette annonce."
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
             return True
-
-        return False
-
-
-
-class CandidaturePermission(BasePermission):
-    def has_permission(self, request, view):
         user = request.user
-
         if not user or not user.is_authenticated:
             return False
-
-        if user.type == "ADMIN":
-            return request.method in ['DELETE', 'PUT', 'GET']
-
-        if user.type == "CITOYEN":
-            return request.method in ["POST"]
-
-        if user.type == "ASSOCIATION":
+        if _is_admin(user):
+            return request.method == "DELETE"
+        if user.type != "ASSOCIATION" or not hasattr(user, "association_profile"):
             return False
-
-        return False
+        if request.method == "POST" and not user.association_profile.est_verifiee:
+            self.message = "Votre association doit être vérifiée par un administrateur avant de publier."
+            return False
+        return True
 
     def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
         user = request.user
-        
-        
-        if user.type == "ADMIN":
-            return request.method in ['DELETE', 'PUT', 'GET']
-
-        if user.type == "CITOYEN":
-            return request.method in ["POST"]
-
-        if user.type == "ASSOCIATION":
-            return False
-        
-        return False
-    
-
-class CandidaturePermissionCandA(BasePermission):
-    def has_permission(self, request, view):
-        user = request.user
-
-        if not user or not user.is_authenticated:
-            return False
-
-        if user.type == "ADMIN":
-            return False
-
-        if user.type == "CITOYEN":
-            return request.method in ["GET","DELETE","PUT"]
-
-        if user.type == "ASSOCIATION":
-            return request.method in ["GET","PUT"]
-
-        return False
-
-    def has_object_permission(self, request, view, obj):
-        user = request.user
-        
-        
-        if not user or not user.is_authenticated:
-            return False
-
-        if user.type == "ADMIN":
-            return False
-
-        if user.type == "CITOYEN":
-            return request.method in ["GET","DELETE","PUT"]
-
-        if user.type == "ASSOCIATION":
-            return request.method in ["GET","PUT"]
-        
-        False
-
-    
+        if _is_admin(user):
+            return request.method == "DELETE"
+        return obj.association_id is not None and obj.association.user_id == user.id
