@@ -90,8 +90,11 @@ MIDDLEWARE = [
 
 # CORS : uniquement les origines déclarées (+ éventuellement les URL de prévisualisation Vercel du frontend)
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
-if env("CORS_ORIGIN_REGEX"):
-    CORS_ALLOWED_ORIGIN_REGEXES = [env("CORS_ORIGIN_REGEX")]
+CORS_ALLOWED_ORIGIN_REGEXES = [env("CORS_ORIGIN_REGEX")] if env("CORS_ORIGIN_REGEX") else []
+if SUR_VERCEL:
+    # Projets frontend EnsembleLink sur Vercel (production + prévisualisations), acceptés même sans variable :
+    #   ensemblelink.vercel.app, ensemblelink-xxxx.vercel.app, solidarlink-frontend-xxxx.vercel.app
+    CORS_ALLOWED_ORIGIN_REGEXES.append(r"^https://(ensemblelink|solidarlink-frontend)(-[a-z0-9-]+)?\.vercel\.app$")
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [o for o in CORS_ALLOWED_ORIGINS if o.startswith("https://")]
 if SUR_VERCEL:
