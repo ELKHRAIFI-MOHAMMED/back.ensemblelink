@@ -129,7 +129,7 @@ class AssociationListView(generics.ListAPIView):
     permission_classes = [AllowAny]
     serializer_class = AssociationProfileSerializer
     search_fields = ["nom", "description", "ville"]
-    filterset_fields = ["ville"]
+    filterset_fields = ["ville", "pays"]
     ordering_fields = ["nom", "note_moyenne", "nombre_annonces"]
 
     def get_queryset(self):

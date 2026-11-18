@@ -166,3 +166,14 @@ class PublicCategoriesView(generics.ListAPIView):
     serializer_class = CategorieSerializer
     pagination_class = None
     queryset = Categorie.objects.annotate(nombre_annonces=Count("annonces")).order_by("nom")
+
+
+class PaysView(APIView):
+    """Pays pris en charge et leurs fuseaux horaires."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        from login_app.pays import PAYS
+
+        return Response([{"code": c, "nom": i["nom"], "fuseaux": i["fuseaux"]} for c, i in PAYS.items()])

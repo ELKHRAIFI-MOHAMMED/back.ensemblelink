@@ -40,26 +40,29 @@ class AvisListCreateView(generics.ListCreateAPIView):
 
 
 class AvisADonnerView(APIView):
-    """Missions terminées pour lesquelles l'utilisateur n'a pas encore laissé d'avis."""
+    """Missions et activités terminées pour lesquelles l'utilisateur n'a pas encore laissé d'avis :
+    en tant que participant (évaluer l'organisateur) et en tant qu'organisateur (évaluer les participants)."""
 
     def get(self, request):
         user = request.user
-        now = timezone.now()
         deja = set(Avis.objects.filter(auteur=user).values_list("annonce_id", "cible_id"))
-        resultats = []
-        acceptees = Candidature.objects.filter(statut=Candidature.Statut.ACCEPTEE, annonce__date_fin__lt=now).select_related(
-            "annonce", "annonce__association", "annonce__association__user", "citoyen", "citoyen__user"
+        acceptees = Candidature.objects.filter(
+            statut=Candidature.Statut.ACCEPTEE, annonce__date_fin__lt=timezone.now()
+        ).select_related(
+            "annonce", "annonce__association", "annonce__association__user", "annonce__createur",
+            "annonce__createur__user", "citoyen", "citoyen__user",
         )
+        resultats = []
+
+        def ajouter(c, cible, nom):
+            if (c.annonce_id, cible.id) not in deja and cible.id != user.id:
+                resultats.append({"annonce": c.annonce_id, "annonce_titre": c.annonce.titre, "cible": cible.id, "cible_nom": nom})
+
         if hasattr(user, "citoyen_profile"):
             for c in acceptees.filter(citoyen=user.citoyen_profile):
-                cible = c.annonce.association.user
-                if (c.annonce_id, cible.id) not in deja:
-                    resultats.append({"annonce": c.annonce_id, "annonce_titre": c.annonce.titre, "cible": cible.id, "cible_nom": c.annonce.association.nom})
-        elif hasattr(user, "association_profile"):
-            for c in acceptees.filter(annonce__association=user.association_profile):
-                cible = c.citoyen.user
-                if (c.annonce_id, cible.id) not in deja:
-                    resultats.append({"annonce": c.annonce_id, "annonce_titre": c.annonce.titre, "cible": cible.id, "cible_nom": str(c.citoyen)})
+                ajouter(c, c.annonce.organisateur_user, c.annonce.organisateur_nom)
+        for c in acceptees.filter(Q(annonce__association__user=user) | Q(annonce__createur__user=user)):
+            ajouter(c, c.citoyen.user, str(c.citoyen))
         return Response(resultats)
 
 

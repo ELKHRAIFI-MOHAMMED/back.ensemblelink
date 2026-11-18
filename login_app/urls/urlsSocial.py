@@ -1,8 +1,13 @@
 from django.urls import path
 
 from login_app.views import viewsSocial as v
+from login_app.views.viewsAujourdhui import AujourdhuiView
+from login_app.views.viewsHistorique import HistoriqueView
 
 urlpatterns = [
+    # Historique personnel
+    path("historique/", HistoriqueView.as_view(), name="historique"),
+    path("aujourdhui/", AujourdhuiView.as_view(), name="aujourdhui"),
     # Avis
     path("avis/", v.AvisListCreateView.as_view(), name="avis"),
     path("avis/a-donner/", v.AvisADonnerView.as_view(), name="avis-a-donner"),

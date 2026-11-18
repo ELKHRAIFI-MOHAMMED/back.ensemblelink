@@ -8,6 +8,7 @@ urlpatterns = [
     path("categories/<int:pk>/", viewsAdmin.CategorieRetrieveUpdateDeleteView.as_view(), name="categorie-detail"),
     path("competences/", viewsAdmin.CompetenceListCreateView.as_view(), name="competence-list-create"),
     path("competences/<int:pk>/", viewsAdmin.CompetenceDeleteView.as_view(), name="competence-detail"),
+    path("pays/", viewsAdmin.PaysView.as_view(), name="pays"),
     # Administration
     path("activate/<int:user_id>/", viewsAdmin.UserStatusView.as_view(), name="toggle_user_status"),
     path("admin/users/", viewsAdmin.AdminUserListView.as_view(), name="admin-users"),

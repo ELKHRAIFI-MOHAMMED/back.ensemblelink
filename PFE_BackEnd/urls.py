@@ -10,6 +10,7 @@ urlpatterns = [
     path("api/", include("login_app.urls.urlsAnnonce")),
     path("api/", include("login_app.urls.urlsCandidature")),
     path("api/", include("login_app.urls.urlsSocial")),
+    path("api/", include("login_app.urls.urlsGroupe")),
 ]
 
 if settings.DEBUG:

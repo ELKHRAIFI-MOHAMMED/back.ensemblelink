@@ -6,13 +6,20 @@ from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from login_app.models import Annonce, Candidature
+from login_app.models import Annonce, Candidature, GroupeDiscussion
 from login_app.permissions import AnnoncePermission, IsCitoyen
-from login_app.serializers import AnnonceSerializer
+from login_app.serializers import AnnonceSerializer, CitoyenMiniSerializer, GroupeSerializer
+from login_app.services import creer_groupe
+
+
+def organisees_par(user):
+    """Annonces dont l'utilisateur est l'organisateur (association ou citoyen)."""
+    return Q(association__user=user) | Q(createur__user=user)
 
 ACCEPTEE = Candidature.Statut.ACCEPTEE
 
@@ -22,7 +29,7 @@ def annonces_annotees():
     et pas de doublons quand d'autres jointures sont ajoutées)."""
     acceptees = Candidature.objects.filter(annonce=OuterRef("pk"), statut=ACCEPTEE).values("annonce")
     return (
-        Annonce.objects.select_related("association", "categorie")
+        Annonce.objects.select_related("association", "createur", "categorie", "groupe")
         .prefetch_related("competences_requises")
         .annotate(
             nb_acceptees=Coalesce(Subquery(acceptees.annotate(c=Count("id")).values("c")), 0),
@@ -40,10 +47,17 @@ class AnnonceFilter(django_filters.FilterSet):
     lat = django_filters.NumberFilter(method="filter_noop")
     lng = django_filters.NumberFilter(method="filter_noop")
     rayon_km = django_filters.NumberFilter(method="filter_rayon")
+    # ?organisateur=CITOYEN (activités entre citoyens) ou ASSOCIATION
+    organisateur = django_filters.ChoiceFilter(
+        choices=[("CITOYEN", "Citoyen"), ("ASSOCIATION", "Association")], method="filter_organisateur"
+    )
 
     class Meta:
         model = Annonce
-        fields = ["type", "categorie", "association", "est_active"]
+        fields = ["type", "categorie", "association", "createur", "pays", "est_active"]
+
+    def filter_organisateur(self, queryset, name, value):
+        return queryset.filter(createur__isnull=False) if value == "CITOYEN" else queryset.filter(association__isnull=False)
 
     def filter_noop(self, queryset, name, value):
         return queryset
@@ -77,13 +91,14 @@ class AnnonceListCreateView(generics.ListCreateAPIView):
     serializer_class = AnnonceSerializer
     permission_classes = [AnnoncePermission]
     filterset_class = AnnonceFilter
-    search_fields = ["titre", "description", "lieu", "ville", "association__nom"]
+    search_fields = ["titre", "description", "lieu", "ville", "association__nom", "createur__prenom", "createur__nom"]
     ordering_fields = ["date_debut", "date_creation", "titre"]
 
     def get_queryset(self):
         qs = annonces_annotees()
         # Par défaut le public ne voit que les annonces actives
-        if self.request.query_params.get("est_active") is None and "association" not in self.request.query_params:
+        params = self.request.query_params
+        if params.get("est_active") is None and "association" not in params and "createur" not in params:
             qs = qs.filter(est_active=True)
         return qs
 
@@ -100,17 +115,14 @@ class AnnonceRetrieveUpdateDeleteView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class MesAnnoncesView(generics.ListAPIView):
-    """Annonces de l'association connectée (actives et clôturées)."""
+    """Annonces organisées par l'utilisateur connecté (association ou citoyen), actives et clôturées."""
 
     serializer_class = AnnonceSerializer
     search_fields = ["titre"]
     filterset_fields = ["type", "est_active"]
 
     def get_queryset(self):
-        user = self.request.user
-        if not hasattr(user, "association_profile"):
-            return Annonce.objects.none()
-        return annonces_annotees().filter(association=user.association_profile).annotate(
+        return annonces_annotees().filter(organisees_par(self.request.user)).annotate(
             nb_candidatures=Count("candidatures", distinct=True)
         )
 
@@ -153,7 +165,7 @@ class AnnonceICalView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, pk):
-        annonce = get_object_or_404(Annonce.objects.select_related("association"), pk=pk)
+        annonce = get_object_or_404(Annonce.objects.select_related("association", "createur"), pk=pk)
 
         def fmt(dt):
             return dt.astimezone(dt_timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -172,7 +184,7 @@ class AnnonceICalView(APIView):
                 f"DTSTART:{fmt(annonce.date_debut)}",
                 f"DTEND:{fmt(annonce.date_fin)}",
                 f"SUMMARY:{esc(annonce.titre)}",
-                f"DESCRIPTION:{esc(annonce.association.nom + ' — ' + annonce.description[:500])}",
+                f"DESCRIPTION:{esc(annonce.organisateur_nom + ' — ' + annonce.description[:500])}",
                 f"LOCATION:{esc(annonce.lieu + (', ' + annonce.ville if annonce.ville else ''))}",
                 "END:VEVENT",
                 "END:VCALENDAR",
@@ -182,3 +194,32 @@ class AnnonceICalView(APIView):
         response = HttpResponse(contenu, content_type="text/calendar; charset=utf-8")
         response["Content-Disposition"] = f'attachment; filename="mission-{annonce.id}.ics"'
         return response
+
+
+class ParticipantsView(APIView):
+    """Participants acceptés d'une annonce.
+    Activités : visibles par tout utilisateur connecté. Missions d'association : organisateur uniquement."""
+
+    def get(self, request, pk):
+        annonce = get_object_or_404(Annonce.objects.select_related("association", "createur"), pk=pk)
+        est_orga = annonce.organisateur_user.id == request.user.id
+        if annonce.type != Annonce.AnnonceType.ACTIVITE and not est_orga:
+            return Response({"detail": "Liste réservée à l'organisateur."}, status=status.HTTP_403_FORBIDDEN)
+        cands = annonce.candidatures.filter(statut=ACCEPTEE).select_related("citoyen")
+        return Response(CitoyenMiniSerializer([c.citoyen for c in cands], many=True, context={"request": request}).data)
+
+
+class CreerGroupeView(APIView):
+    """POST : l'organisateur crée le groupe de discussion de son annonce.
+    Les participants acceptés (actuels et futurs) y sont ajoutés automatiquement."""
+
+    def post(self, request, pk):
+        annonce = get_object_or_404(Annonce.objects.select_related("association", "createur"), pk=pk)
+        if annonce.organisateur_user.id != request.user.id:
+            return Response({"detail": "Seul l'organisateur peut créer le groupe."}, status=status.HTTP_403_FORBIDDEN)
+        if annonce.est_terminee:
+            return Response({"detail": "L'activité est terminée."}, status=status.HTTP_400_BAD_REQUEST)
+        if GroupeDiscussion.objects.filter(annonce=annonce).exists():
+            return Response({"detail": "Un groupe existe déjà pour cette annonce."}, status=status.HTTP_400_BAD_REQUEST)
+        groupe = creer_groupe(annonce, request.data.get("nom", ""))
+        return Response(GroupeSerializer(groupe, context={"request": request}).data, status=status.HTTP_201_CREATED)

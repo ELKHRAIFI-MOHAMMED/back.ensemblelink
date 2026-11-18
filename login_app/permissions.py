@@ -42,9 +42,10 @@ class IsAssociation(BasePermission):
 class AnnoncePermission(BasePermission):
     """
     - Lecture : publique.
-    - Création : association **vérifiée** uniquement.
-    - Modification : association propriétaire.
-    - Suppression : association propriétaire ou admin.
+    - Création : association **vérifiée** (tous types) ou citoyen avec profil (activités uniquement,
+      contrôlé dans le serializer).
+    - Modification : organisateur (association ou citoyen).
+    - Suppression : organisateur ou admin.
     """
 
     message = "Action non autorisée sur cette annonce."
@@ -57,12 +58,14 @@ class AnnoncePermission(BasePermission):
             return False
         if _is_admin(user):
             return request.method == "DELETE"
-        if user.type != "ASSOCIATION" or not hasattr(user, "association_profile"):
-            return False
-        if request.method == "POST" and not user.association_profile.est_verifiee:
-            self.message = "Votre association doit être vérifiée par un administrateur avant de publier."
-            return False
-        return True
+        if user.type == "ASSOCIATION" and hasattr(user, "association_profile"):
+            if request.method == "POST" and not user.association_profile.est_verifiee:
+                self.message = "Votre association doit être vérifiée par un administrateur avant de publier."
+                return False
+            return True
+        if user.type == "CITOYEN" and hasattr(user, "citoyen_profile"):
+            return True
+        return False
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
@@ -70,4 +73,4 @@ class AnnoncePermission(BasePermission):
         user = request.user
         if _is_admin(user):
             return request.method == "DELETE"
-        return obj.association_id is not None and obj.association.user_id == user.id
+        return obj.organisateur_user.id == user.id
