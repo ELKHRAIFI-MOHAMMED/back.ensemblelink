@@ -2,7 +2,7 @@
 
 API Django REST d'**EnsembleLink** : associations, bénévoles, activités entre citoyens, dons, groupes de discussion,
 avis, historique et alerte « Jour J ». Frontend : dépôt
-[solidarlink-frontend](https://github.com/ELKHRAIFI-MOHAMMED/solidarlink-frontend).
+[ensemblelink](https://github.com/ELKHRAIFI-MOHAMMED/ensemblelink).
 
 ## Trois façons de lancer le projet
 
@@ -57,7 +57,7 @@ ENV_FILE=.env.supabase python manage.py seed_demo --reset  # données de démo
 
 ### 2. Importer le projet dans Vercel
 
-**Vercel → Add New → Project → importer `backPfe`**, puis **Settings → Environment Variables** :
+**Vercel → Add New → Project → importer `back.ensemblelink`**, puis **Settings → Environment Variables** :
 
 | Variable | Valeur |
 |---|---|
