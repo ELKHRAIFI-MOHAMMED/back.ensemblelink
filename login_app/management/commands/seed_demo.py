@@ -1,5 +1,5 @@
 """
-Données de démonstration SolidarLink (v3, internationale).
+Données de démonstration EnsembleLink (v4 bêta, internationale).
 
     python manage.py seed_demo            # remplit une base vide
     python manage.py seed_demo --reset    # vide les données de l'app puis remplit
@@ -328,14 +328,14 @@ class Command(BaseCommand):
         elif User.objects.filter(username="admin").exists():
             raise CommandError("Les données de démo existent déjà. Utilisez --reset pour les recréer.")
 
-        admin = User.objects.create_superuser("admin", "admin@solidarlink.local", MOT_DE_PASSE, type=User.UserType.ADMIN)
+        admin = User.objects.create_superuser("admin", "admin@ensemblelink.demo", MOT_DE_PASSE, type=User.UserType.ADMIN)
         self.cats = {nom: Categorie.objects.create(nom=nom, icone=ic, couleur=col) for nom, ic, col in CATEGORIES}
         self.comps = {nom: Competence.objects.create(nom=nom) for nom in COMPETENCES}
 
         self.assos = {}
         for username, nom, ville, statut, desc in ASSOCIATIONS:
             pays = VILLES[ville][2]
-            u = User.objects.create_user(username, f"{username}@asso.solidarlink.local", MOT_DE_PASSE, type=User.UserType.ASSOCIATION)
+            u = User.objects.create_user(username, f"{username}@asso.ensemblelink.demo", MOT_DE_PASSE, type=User.UserType.ASSOCIATION)
             self.assos[username] = AssociationProfile.objects.create(
                 user=u, nom=nom, ville=ville, pays=pays, description=desc, statut_verification=statut,
                 contact=f"contact@{username.replace('_', '')}.org",
@@ -351,7 +351,7 @@ class Command(BaseCommand):
         for username, prenom, nom, ville, cmp, interets in CITOYENS:
             pays = VILLES[ville][2]
             anglais = VILLES[ville][4] == "en"
-            u = User.objects.create_user(username, f"{username}@mail.solidarlink.local", MOT_DE_PASSE,
+            u = User.objects.create_user(username, f"{username}@mail.ensemblelink.demo", MOT_DE_PASSE,
                                          type=User.UserType.CITOYEN, first_name=prenom, last_name=nom)
             c = CitoyenProfile.objects.create(
                 user=u, prenom=prenom, nom=nom, ville=ville, pays=pays,

@@ -225,7 +225,7 @@ def _generer_attestation_pdf(buffer, cand):
     c.rect(0, hauteur - 110, largeur, 110, fill=1, stroke=0)
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 26)
-    c.drawString(50, hauteur - 65, "SolidarLink")
+    c.drawString(50, hauteur - 65, "EnsembleLink")
     c.setFont("Helvetica", 12)
     c.drawString(50, hauteur - 88, "La plateforme qui relie associations et bénévoles")
 
@@ -263,6 +263,6 @@ def _generer_attestation_pdf(buffer, cand):
     c.drawString(70, y, f"Fait le {timezone.localtime():%d/%m/%Y}, pour servir et valoir ce que de droit.")
     c.setFont("Helvetica-Oblique", 9)
     c.setFillColor(colors.grey)
-    c.drawString(50, 50, f"Document généré par SolidarLink — vérification : {cand.code_presence}")
+    c.drawString(50, 50, f"Document généré par EnsembleLink — vérification : {cand.code_presence}")
     c.showPage()
     c.save()

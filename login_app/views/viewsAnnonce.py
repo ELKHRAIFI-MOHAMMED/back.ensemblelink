@@ -177,9 +177,9 @@ class AnnonceICalView(APIView):
             [
                 "BEGIN:VCALENDAR",
                 "VERSION:2.0",
-                "PRODID:-//SolidarLink//FR",
+                "PRODID:-//EnsembleLink//FR",
                 "BEGIN:VEVENT",
-                f"UID:annonce-{annonce.id}@solidarlink",
+                f"UID:annonce-{annonce.id}@ensemblelink.com",
                 f"DTSTAMP:{fmt(timezone.now())}",
                 f"DTSTART:{fmt(annonce.date_debut)}",
                 f"DTEND:{fmt(annonce.date_fin)}",

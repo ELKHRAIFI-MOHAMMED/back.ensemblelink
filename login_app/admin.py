@@ -11,8 +11,8 @@ from .models import (
 class UserAdmin(BaseUserAdmin):
     list_display = ("username", "email", "type", "is_active", "date_joined")
     list_filter = ("type", "is_active")
-    fieldsets = BaseUserAdmin.fieldsets + (("SolidarLink", {"fields": ("type",)}),)
-    add_fieldsets = BaseUserAdmin.add_fieldsets + (("SolidarLink", {"fields": ("email", "type")}),)
+    fieldsets = BaseUserAdmin.fieldsets + (("EnsembleLink", {"fields": ("type",)}),)
+    add_fieldsets = BaseUserAdmin.add_fieldsets + (("EnsembleLink", {"fields": ("email", "type")}),)
 
 
 @admin.register(AssociationProfile)

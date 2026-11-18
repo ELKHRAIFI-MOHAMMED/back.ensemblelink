@@ -293,11 +293,15 @@ class AnnonceSerializer(FuseauMixin, serializers.ModelSerializer):
         except GroupeDiscussion.DoesNotExist:
             return None
         user = self._user()
+        mes_groupes = self.context.get("_mes_groupes")
+        if mes_groupes is None and user:
+            mes_groupes = set(MembreGroupe.objects.filter(user=user).values_list("groupe_id", flat=True))
+            self.context["_mes_groupes"] = mes_groupes
         return {
             "id": g.id,
             "nom": g.nom,
             "est_ferme": g.est_ferme,
-            "suis_membre": bool(user and g.membres.filter(user=user).exists()),
+            "suis_membre": bool(user and g.id in (mes_groupes or set())),
         }
 
     # Les valeurs sont annotées dans le queryset (évite le N+1) avec repli sur la propriété du modèle.
@@ -323,8 +327,15 @@ class AnnonceSerializer(FuseauMixin, serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated or not hasattr(user, "citoyen_profile"):
             return None
-        cand = obj.candidatures.filter(citoyen=user.citoyen_profile).only("id", "statut").first()
-        return {"id": cand.id, "statut": cand.statut} if cand else None
+        # Une seule requête pour toute la liste (mise en cache dans le contexte du serializer)
+        cache = self.context.setdefault("_mes_candidatures", None)
+        if cache is None:
+            cache = {
+                a: {"id": i, "statut": st}
+                for i, a, st in Candidature.objects.filter(citoyen=user.citoyen_profile).values_list("id", "annonce_id", "statut")
+            }
+            self.context["_mes_candidatures"] = cache
+        return cache.get(obj.id)
 
     def validate_image(self, value):
         return _valider_image(value)

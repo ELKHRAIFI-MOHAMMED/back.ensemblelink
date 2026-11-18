@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": [
+    "lhr1"
+  ],
+  "functions": {
+    "PFE_BackEnd/wsgi.py": {
+      "maxDuration": 30
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/quotidien/",
+      "schedule": "0 5 * * *"
+    }
+  ]
+}

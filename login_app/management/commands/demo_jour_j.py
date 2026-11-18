@@ -8,8 +8,9 @@ Comptes concernés : emma.martin (mission en cours à Lyon), yassine.elamrani (f
 imane.alaoui (organisatrice du footing), oliver.smith (organisateur à Londres), panier_solidaire (organisatrice).
 """
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
@@ -28,9 +29,23 @@ def _arrondi(dt):
 class Command(BaseCommand):
     help = "Crée des activités du jour pour tester l'alerte Jour J."
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--journee", action="store_true",
+            help="Horaires fixes répartis sur la journée locale (pour la tâche planifiée quotidienne de la bêta).",
+        )
+
     @transaction.atomic
     def handle(self, *args, **options):
         now = _arrondi(timezone.now())
+        journee = options.get("journee")
+
+        def a(heure_locale, fuseau, decalage):
+            """Début : heure fixe du jour (mode --journee) ou décalage relatif à maintenant."""
+            if journee:
+                jour = timezone.now().astimezone(ZoneInfo(fuseau)).date()
+                return datetime.combine(jour, heure_locale, tzinfo=ZoneInfo(fuseau))
+            return now + decalage
         anciennes = Annonce.objects.filter(description__contains=MARQUEUR)
         lien_anciennes = [f"/missions/{i}" for i in anciennes.values_list("id", flat=True)]
         Notification.objects.filter(lien__in=lien_anciennes).delete()
@@ -66,17 +81,17 @@ class Command(BaseCommand):
 
         missions = [
             # Mission associative EN COURS (démarrée il y a 30 min) : Emma voit son QR de présence
-            creer("Tri des dons du jour", now - timedelta(minutes=30), 3.5, "Lyon", "FR", "Europe/Paris",
+            creer("Tri des dons du jour", a(time(8), "Europe/Paris", -timedelta(minutes=30)), 12 if journee else 3.5, "Lyon", "FR", "Europe/Paris",
                   "45.748000", "4.846000", "Solidarité alimentaire",
                   "Tri et rangement des denrées reçues cette semaine. Gants fournis.",
                   ["emma.martin", "adam.benali"], association=panier, type_="APPEL_BENEVOLAT", places=8),
             # Activité citoyenne dans 2 h à Casablanca : Yassine participe, Imane organise
-            creer("Footing du soir sur la Corniche", now + timedelta(hours=2), 1.5, "Casablanca", "MA",
+            creer("Footing du soir sur la Corniche", a(time(19), "Africa/Casablanca", timedelta(hours=2)), 1.5, "Casablanca", "MA",
                   "Africa/Casablanca", "33.595000", "-7.660000", "Sport entre amis",
                   "Footing tranquille de 6 km le long de la Corniche d'Aïn Diab, tous niveaux.",
                   ["yassine.elamrani", "karim.berrada"], createur=cit["imane.alaoui"], places=15),
             # Activité citoyenne dans 1 h à Londres : Oliver organise
-            creer("Evening run along the Thames", now + timedelta(hours=1), 1, "London", "GB", "Europe/London",
+            creer("Evening run along the Thames", a(time(18), "Europe/London", timedelta(hours=1)), 1, "London", "GB", "Europe/London",
                   "51.505000", "-0.090000", "Sport entre amis",
                   "Easy 5k from London Bridge to Westminster and back.",
                   ["amelia.jones", "priya.patel"], createur=cit["oliver.smith"], places=12),

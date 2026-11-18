@@ -1,0 +1,6 @@
+# Dépendances pour le développement local (MySQL/XAMPP + WebSockets temps réel avec Daphne)
+-r requirements.txt
+mysqlclient>=2.2
+daphne>=4.1
+# Optionnel : couche Redis pour les WebSockets multi-instances
+channels-redis>=4.2

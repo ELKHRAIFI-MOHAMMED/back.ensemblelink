@@ -1,5 +1,5 @@
 """
-WebSockets SolidarLink.
+WebSockets EnsembleLink.
 
 Correctif sécurité : l'ancienne version acceptait les messages avant toute
 authentification et faisait confiance au `sender_id` envoyé par le client.

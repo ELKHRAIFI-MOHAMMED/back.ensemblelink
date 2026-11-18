@@ -6,3 +6,8 @@ media/
 staticfiles/
 .venv/
 venv/
+
+# Fichiers d environnement locaux (secrets) : jamais dans Git
+.env.*
+!.env.example
+.vercel
